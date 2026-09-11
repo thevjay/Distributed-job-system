@@ -280,4 +280,17 @@ Worker
 
   As long as the worker is alive, the lease remains valid.
 
-  
+#Create a Recovery Worker :
+- Architecture:
+                MongoDB
+                   │
+                   ▼
+            Recovery Worker
+                   │
+          expired processing jobs
+                   │
+                   ▼
+                 Redis
+                   │
+                   ▼
+            Normal Workers

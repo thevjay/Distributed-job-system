@@ -141,6 +141,19 @@ func main() {
 		// go jobWorker.Start(ctx)
 	}
 
+	recoveryWorker := worker.NewRecoveryWorker(
+		jobRepository,
+		redisQueue,
+	)
+
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		recoveryWorker.Start(ctx)
+	}()
+	
 	// -------------------------------------------------------
 	// Start HTTP Server		
 	// -------------------------------------------------------

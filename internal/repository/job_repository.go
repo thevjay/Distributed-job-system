@@ -302,3 +302,108 @@ func (r *JobRepository) FailJob(
 
 	return nil
 }
+
+func (r *JobRepository) GetExpiredJobs(
+	ctx context.Context,
+) ([]*model.Job, error) {
+
+	now := time.Now()
+
+	cursor, err := r.collection.Find(
+		ctx,
+		bson.M{
+			"status": model.StatusProcessing,
+			"leaseUntil": bson.M{
+				"$lt": now,
+			},
+		},
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	defer cursor.Close(ctx)
+
+	var jobs []*model.Job
+
+	for cursor.Next(ctx) {
+		var job model.Job
+
+		if err := cursor.Decode(&job); err != nil {
+			return nil, err
+		}
+
+		jobs = append(jobs, &job)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
+/**
+This Searches for :
+  status = processing AND leaseUntil < now
+
+  Example:
+   Job A
+   processing
+   leaseUntil = 17:30:00
+
+   Current time = 17:30:05
+
+   17:30:00 < 17:30:05
+			|
+			expired
+
+ - We need to prevent repeated recovery
+  1.Don't immediately do:
+   - Find expired job
+     Enqueue Redis
+  
+   - We need to atomically change:
+     Processing + expired
+	    
+	    queued
+
+	before putting it into Redis 
+*/
+
+func (r *JobRepository) RecoverJob(
+	ctx context.Context,
+	id string,
+) error {
+
+	now := time.Now()
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status": model.StatusProcessing,
+			"leaseUntil": bson.M{
+				"$lt": now,
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"status": model.StatusQueued,
+				"leaseUntil": nil,
+				"updatedAt": now,
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}
