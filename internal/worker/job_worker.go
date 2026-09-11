@@ -95,7 +95,6 @@ func (w *JobWorker) Start(ctx context.Context){
 
 		job, err := w.repository.ClaimJob(ctx, jobID)
 
-		log.Printf("ERROR",err)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("Worker %d context cancelled", w.id)
@@ -115,11 +114,9 @@ func (w *JobWorker) Start(ctx context.Context){
 			log.Printf("Worker %d: failed to get job %s: %v", w.id,jobID,err)
 			continue
 		}
-
 		// -------------------------------------------------------
 		// Increment Attempt		
 		// -------------------------------------------------------
-
 		attempt, err := w.repository.IncrementAttempts(ctx, jobID)
 
 		if err != nil {
@@ -131,18 +128,15 @@ func (w *JobWorker) Start(ctx context.Context){
 			log.Printf("Worker %d: failed to increment attempts for job %s: %v",w.id,jobID,err)
 			continue
 		}
-
 		log.Printf(
 			"Worker %d: processing job %s, attempt %d",
 			w.id,
 			jobID,
 			attempt,
 		)
-
 		// -------------------------------------------------------
 		// Mark Processing	
 		// -------------------------------------------------------
-
 		if err := w.repository.UpdateStatus(
 			ctx,
 			jobID,
@@ -284,3 +278,36 @@ func (w *JobWorker) Start(ctx context.Context){
 	}
 }
 
+
+func (w *JobWorker) processJob(
+	ctx context.Context,
+	jobID string,
+) error {
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	processing := time.NewTimer(30 * time.Second)
+	defer processing.Stop()
+
+	for {
+		select {
+		case <-processing.C:
+			return nil
+
+		case <-ticker.C:
+			if err := w.repository.RenewLease(
+				ctx,
+				jobID,
+			); err != nil {
+				return err
+			}
+
+			log.Printf("Worker: renewed lease for job %s", jobID,)
+
+			case <-ctx.Done():
+				return ctx.Err()
+		}
+
+	}
+}

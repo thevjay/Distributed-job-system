@@ -207,3 +207,36 @@ func (r *JobRepository) ClaimJob(
 
 	return &job, nil
 }
+
+func (r *JobRepository) RenewLease(
+	ctx context.Context,
+	id string,
+) error {
+
+	now := time.Now()
+	leaseUntil := now.Add(10* time.Second)
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status": model.StatusProcessing,
+		},
+		bson.M{
+			"$set": bson.M{
+				"leaseUntil": leaseUntil,
+				"updatedAt": now,
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}

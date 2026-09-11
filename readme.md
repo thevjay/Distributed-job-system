@@ -233,3 +233,51 @@ db.jobs.findOneAndUpdate(
                    Normal Worker
 
 -> This gives us failure recovery.
+
+# Lease Renewal / Heartbeart:
+ We now have:
+ ```
+    queued
+      ↓
+    ClaimJob()
+      ↓
+    processing
+      ↓
+    leaseUntil = now + 10 seconds
+    
+ ```
+But there's a problem.
+Suppose a job takes 30 seconds:
+```
+0 sec   → worker claims job
+10 sec  → lease expires
+11 sec  → another worker can claim it ❌
+30 sec  → original worker finishes
+
+```
+Now two workers can process the same job.
+So we need a heartbeat.
+
+12.3 - What is a heartbeat?
+- The worker periodically tells MongoDB:
+  -- " I'm still processig this job. Extend my lease."
+
+  Example:
+  ```
+Worker
+  │
+  ├── Claim → lease 10 sec
+  │
+  ├── after 5 sec → renew
+  │
+  ├── after 5 sec → renew
+  │
+  ├── after 5 sec → renew
+  │
+  └── job completed
+
+  ```
+
+  As long as the worker is alive, the lease remains valid.
+
+  
