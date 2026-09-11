@@ -240,3 +240,65 @@ func (r *JobRepository) RenewLease(
 
 	return nil
 }
+
+func (r *JobRepository) CompleteJob(
+	ctx context.Context,
+	id	string,
+) error {
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status":  model.StatusProcessing,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status": model.StatusCompleted,
+				"leaseUntil": nil,
+				"updatedAt": time.Now(),
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}
+
+func (r *JobRepository) FailJob(
+	ctx context.Context,
+	id	string,
+) error {
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status": model.StatusProcessing,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status": model.StatusFailed,
+				"leaseUntil": nil,
+				"updatedAt": time.Now(),
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}

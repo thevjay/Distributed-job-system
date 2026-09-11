@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"distributed-job-system/internal/model"
 	"distributed-job-system/internal/queue"
 	"distributed-job-system/internal/repository"
 	"errors"
@@ -49,10 +48,7 @@ func (w *JobWorker) Start(ctx context.Context){
 		default:
 		}
 
-		// -------------------------------------------------------
 		// Wait for a job from Redis
-		// -------------------------------------------------------
-
 		jobID, err := w.queue.Dequeue(ctx)
 
 		if err != nil {
@@ -62,8 +58,8 @@ func (w *JobWorker) Start(ctx context.Context){
 			}
 
 			if errors.Is(err,redis.Nil) {
-				// Redis timeout - no job available.
-				// Loop again and check context.
+				                                         // Redis timeout - no job available.
+				                                         // Loop again and check context.
 				continue
 			}
 			log.Printf(
@@ -89,10 +85,7 @@ func (w *JobWorker) Start(ctx context.Context){
 			jobID,
 		)
 
-		// -------------------------------------------------------
 		// Get Job
-		// -------------------------------------------------------
-
 		job, err := w.repository.ClaimJob(ctx, jobID)
 
 		if err != nil {
@@ -102,7 +95,6 @@ func (w *JobWorker) Start(ctx context.Context){
 			}
 
 			if errors.Is(err, mongo.ErrNoDocuments) {
-
 				log.Printf(
 					"Worker %d: job %s already claimed or no longer queued",
 					w.id,
@@ -114,9 +106,8 @@ func (w *JobWorker) Start(ctx context.Context){
 			log.Printf("Worker %d: failed to get job %s: %v", w.id,jobID,err)
 			continue
 		}
-		// -------------------------------------------------------
+
 		// Increment Attempt		
-		// -------------------------------------------------------
 		attempt, err := w.repository.IncrementAttempts(ctx, jobID)
 
 		if err != nil {
@@ -134,51 +125,18 @@ func (w *JobWorker) Start(ctx context.Context){
 			jobID,
 			attempt,
 		)
-		// -------------------------------------------------------
-		// Mark Processing	
-		// -------------------------------------------------------
-		if err := w.repository.UpdateStatus(
-			ctx,
-			jobID,
-			model.StatusProcessing,
-		); err != nil {
+
+		// Actual processing + heartbeat
+		if err := w.processJob(ctx, jobID); err != nil {
 
 			if ctx.Err() != nil {
-				log.Printf("Worker %d context cancelled",w.id)
+				log.Printf("Worker %d: cancellation received while processing job %s", w.id, jobID,)
 				return
 			}
 
-			log.Printf(
-				"Worker %d failed to update job %s: %v",
-				w.id,
-				jobID,
-				err,
-			)
+			log.Printf("Worker %d: processing failed for job %s: %v", w.id,jobID,err)
 			continue
 		}
-
-		log.Printf(
-			"Worker %d processing job %s",
-			w.id,
-			jobID,
-		)
-		
-		// -------------------------------------------------------
-		// Simulate Job Processing		
-		// -------------------------------------------------------
-
-		// select {
-		// case <-time.After(3 * time.Second):
-		// 	//  Processing finished.
-
-		// case <-ctx.Done():
-		// 	log.Printf("Worker %d: cancellation received while processing job %s", w.id,jobID,)
-		// 	return
-		// }
-
-		// -------------------------------------------------------
-		// Simulate Failure
-		// -------------------------------------------------------
 
 		if job.Type == "fail" {
 
@@ -189,10 +147,7 @@ func (w *JobWorker) Start(ctx context.Context){
 				attempt,
 			)
 
-			// -------------------------------------------------------
 			// Retry
-			// -------------------------------------------------------
-
 			if attempt < MaxAttempts {
 
 				delay := BaseDelay * time.Duration(1<<(attempt-1))
@@ -205,7 +160,6 @@ func (w *JobWorker) Start(ctx context.Context){
 				)
 
 				// Context-aware retry delay.
-
 				select {
 				case <-time.After(delay):
 					// Retry delay completed
@@ -223,31 +177,27 @@ func (w *JobWorker) Start(ctx context.Context){
 						return
 					}
 
-					log.Printf(
-						"Worker %d: failed to enqueue retry for job %s: %v",
-						w.id,
-						jobID,
-						err,
-					)
+					log.Printf( "Worker %d: failed to enqueue retry for job %s: %v",w.id,jobID,err,)
 				}
-
 				continue
+
 			}
 
-			// -------------------------------------------------------
+			
 			// Permanently Failed
-			// -------------------------------------------------------
+			log.Printf("Worker %d: job %s permanently failed",w.id,jobID,)
 
-			log.Printf(
-				"Worker %d: job %s permanently failed",
-				w.id,
-				jobID,
-			)
+			// if err := w.repository.UpdateStatus(
+			// 	ctx,
+			// 	jobID,
+			// 	model.StatusFailed,
+			// ); err != nil {
+			// 	log.Printf("Worker %d: failed to mark job %s as failed: %v",w.id,jobID,err)
+			// }
 
-			if err := w.repository.UpdateStatus(
+			if err := w.repository.FailJob(
 				ctx,
 				jobID,
-				model.StatusFailed,
 			); err != nil {
 				log.Printf("Worker %d: failed to mark job %s as failed: %v",w.id,jobID,err)
 			}
@@ -255,25 +205,20 @@ func (w *JobWorker) Start(ctx context.Context){
 			continue
 		}
 
-		// -------------------------------------------------------
-		// Successful Job
-		// -------------------------------------------------------
-
-		if err := w.repository.UpdateStatus(
+		if err := w.repository.CompleteJob(
 			ctx,
 			jobID,
-			model.StatusCompleted,
 		); err != nil {
 
 			if ctx.Err() != nil {
-				log.Printf("Worker %d context cancelled",w.id)
+				log.Printf("Worker %d context cancelled", w.id,)
 				return
 			}
 
-			log.Printf("Worker %d: failed to mark job %s completed: %v",w.id,jobID,err)
+			log.Printf("Worker %d: failed to complete job %s: %v",w.id,jobID,err)
 			continue
 		}
-
+		
 		log.Printf("Worker %d completed job %s",w.id,jobID)
 	}
 }
@@ -303,7 +248,7 @@ func (w *JobWorker) processJob(
 				return err
 			}
 
-			log.Printf("Worker: renewed lease for job %s", jobID,)
+			log.Printf("Worker %d: renewed lease for job %s",w.id,jobID,)
 
 			case <-ctx.Done():
 				return ctx.Err()
