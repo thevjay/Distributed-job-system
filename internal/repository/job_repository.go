@@ -275,6 +275,7 @@ func (r *JobRepository) CompleteJob(
 func (r *JobRepository) FailJob(
 	ctx context.Context,
 	id	string,
+	errMsg string,
 ) error {
 
 	result, err := r.collection.UpdateOne(
@@ -287,6 +288,7 @@ func (r *JobRepository) FailJob(
 			"$set": bson.M{
 				"status": model.StatusFailed,
 				"leaseUntil": nil,
+				"lastError": errMsg,
 				"updatedAt": time.Now(),
 			},
 		},
@@ -393,6 +395,70 @@ func (r *JobRepository) RecoverJob(
 				"status": model.StatusQueued,
 				"leaseUntil": nil,
 				"updatedAt": now,
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}
+
+func (r *JobRepository) RetryJob(
+	ctx context.Context,
+	id string,
+) error {
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status": model.StatusProcessing,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status": model.StatusQueued,
+				"leaseUntil": nil,
+				"updatedAt": time.Now(),
+			},
+		},
+	)
+
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return  mongo.ErrNoDocuments
+	}
+
+	return nil
+}
+
+func (r *JobRepository) ReplayJob(
+	ctx context.Context,
+	id	string,
+) error {
+
+	result, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{
+			"_id": id,
+			"status": model.StatusFailed,
+		},
+		bson.M{
+			"$set": bson.M{
+				"status": model.StatusQueued,
+				"attempts": 0,
+				"lastError": "",
+				"leaseUntil": nil,
+				"updatedAt": time.Now(),
 			},
 		},
 	)

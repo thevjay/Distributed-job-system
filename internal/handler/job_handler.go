@@ -169,3 +169,44 @@ func (h *JobHandler) GetAllJobs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type","application/json")
 	json.NewEncoder(w).Encode(jobs)
 }
+
+func (h *JobHandler) ReplayJob(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	jobID := chi.URLParam(r, "id")
+
+	job, err := h.service.ReplayJob(
+		r.Context(),
+		jobID,
+	)
+
+	if err != nil {
+
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			http.Error(
+				w,
+				"job not found or not eligible for replay",
+				http.StatusNotFound,
+			)
+			return
+		}
+
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	w.Header().Set(
+		"Content-Type",
+		"application/json",
+	)
+
+	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(job)
+}

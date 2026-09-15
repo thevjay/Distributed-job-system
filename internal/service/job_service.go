@@ -98,3 +98,41 @@ func (s *JobService) GetJobByID(ctx context.Context, id string,) (*model.Job, er
 func (s *JobService) GetAllJobs(ctx context.Context) ([]*model.Job, error) {
 	return s.repository.GetAll(ctx)
 }
+
+func (s *JobService) ReplayJob(
+	ctx context.Context,
+	id 	string,
+) (*model.Job, error) {
+
+	job, err := s.repository.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if job.Status != model.StatusFailed {
+		return nil, errors.New(
+			"Only failed jobs can be replayed",
+		)
+	}
+
+	if err := s.repository.ReplayJob(
+		ctx,
+		id,
+	); err != nil {
+		return nil, err
+	}
+
+	job, err = s.repository.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := s.queue.Enqueue(
+		ctx,
+		job.ID,
+	); err != nil {
+		return nil, err
+	}
+
+	return job, nil
+}

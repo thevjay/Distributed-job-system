@@ -105,7 +105,7 @@ func main() {
 	router.Post("/jobs", jobHandler.CreateJob)
 	router.Get("/jobs/{id}", jobHandler.GetJobByID)
 	router.Get("/jobs", jobHandler.GetAllJobs)
-
+	router.Post("/jobs/{id}/retry", jobHandler.ReplayJob)
 
 	// -------------------------------------------------------
 	// HTTP Server

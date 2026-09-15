@@ -13,24 +13,24 @@ import (
 )
 
 type JobWorker struct {
-	id		int
-	queue	*queue.RedisQueue
-	repository	*repository.JobRepository
+	id         int
+	queue      *queue.RedisQueue
+	repository *repository.JobRepository
 }
 
 func NewJobWorker(
-	id	int,
-	queue	*queue.RedisQueue,
+	id int,
+	queue *queue.RedisQueue,
 	repository *repository.JobRepository,
 ) *JobWorker {
 	return &JobWorker{
-		id:		id,
-		queue: queue,
+		id:         id,
+		queue:      queue,
 		repository: repository,
 	}
 }
 
-func (w *JobWorker) Start(ctx context.Context){
+func (w *JobWorker) Start(ctx context.Context) {
 	const (
 		MaxAttempts = 3
 		BaseDelay   = 1 * time.Second
@@ -57,30 +57,27 @@ func (w *JobWorker) Start(ctx context.Context){
 				return
 			}
 
-			if errors.Is(err,redis.Nil) {
-				                                         // Redis timeout - no job available.
-				                                         // Loop again and check context.
+			if errors.Is(err, redis.Nil) {
+				// Redis timeout - no job available.
+				// Loop again and check context.
 				continue
 			}
 			log.Printf(
 				"Worker %d failed to dequeue job: %v",
-				w.id, 
+				w.id,
 				err,
 			)
 
 			continue
 		}
 
-		// IMPORTANT:
-		// Context may have been cancelled around the same time
-		// Redis returned a job.
 		if ctx.Err() != nil {
-			log.Printf("Worker %d received shutdown signal, skipping job %s",w.id,jobID)
+			log.Printf("Worker %d received shutdown signal, skipping job %s", w.id, jobID)
 			return
 		}
 
 		log.Printf(
-			"Worker %d received job %s", 
+			"Worker %d received job %s",
 			w.id,
 			jobID,
 		)
@@ -103,11 +100,11 @@ func (w *JobWorker) Start(ctx context.Context){
 				continue
 			}
 
-			log.Printf("Worker %d: failed to get job %s: %v", w.id,jobID,err)
+			log.Printf("Worker %d: failed to get job %s: %v", w.id, jobID, err)
 			continue
 		}
 
-		// Increment Attempt		
+		// Increment Attempt
 		attempt, err := w.repository.IncrementAttempts(ctx, jobID)
 
 		if err != nil {
@@ -116,7 +113,7 @@ func (w *JobWorker) Start(ctx context.Context){
 				return
 			}
 
-			log.Printf("Worker %d: failed to increment attempts for job %s: %v",w.id,jobID,err)
+			log.Printf("Worker %d: failed to increment attempts for job %s: %v", w.id, jobID, err)
 			continue
 		}
 		log.Printf(
@@ -130,78 +127,96 @@ func (w *JobWorker) Start(ctx context.Context){
 		if err := w.processJob(ctx, jobID); err != nil {
 
 			if ctx.Err() != nil {
-				log.Printf("Worker %d: cancellation received while processing job %s", w.id, jobID,)
+				log.Printf("Worker %d: cancellation received while processing job %s", w.id, jobID)
 				return
 			}
 
-			log.Printf("Worker %d: processing failed for job %s: %v", w.id,jobID,err)
+			log.Printf("Worker %d: processing failed for job %s: %v", w.id, jobID, err)
 			continue
 		}
 
 		if job.Type == "fail" {
 
-			log.Printf(
-				"worker %d: job %s failed on attempt %d",
-				w.id,
-				jobID,
-				attempt,
-			)
+			log.Printf("worker %d: job %s failed on attempt %d", w.id, jobID, attempt)
 
-			// Retry
+			// Retry if maximum attempts have not been reached.
 			if attempt < MaxAttempts {
 
 				delay := BaseDelay * time.Duration(1<<(attempt-1))
 
-				log.Printf(
-					"Worker %d: retrying job %s after %v",
-					w.id,
-					jobID,
-					delay,
-				)
+				log.Printf("Worker %d: retrying job %s after %v", w.id, jobID, delay)
+
+				// Wait for retry delay, but remain
+				// responsive to shutdown.
+				timer := time.NewTicker(delay)
 
 				// Context-aware retry delay.
 				select {
-				case <-time.After(delay):
+				case <-timer.C:
 					// Retry delay completed
-				
+
 				case <-ctx.Done():
-					log.Printf("Worker %d: cancellation received during retry delay", w.id,)
+					timer.Stop()
+
+					log.Printf("Worker %d: cancellation received during retry delay", w.id)
 					return
 				}
 
+				// Change MongoDB:
+				// processing -> queued
+				// leaseUntil -> nil
+
+				if err := w.repository.RetryJob(
+					ctx,
+					jobID,
+				); err != nil {
+
+					if ctx.Err() != nil {
+						log.Printf("Worker %d context cancelled", w.id)
+						return
+					}
+					log.Printf("Worker %d: failed to mark job %s for retry: %v", w.id, jobID, err)
+					continue
+				}
+
 				// Put the job back into Redis.
-				err := w.queue.Enqueue(ctx,jobID)
+				err := w.queue.Enqueue(ctx, jobID)
 				if err != nil {
 					if ctx.Err() != nil {
-						log.Printf("Worker %d context cancelled",w.id)
+						log.Printf("Worker %d context cancelled", w.id)
 						return
 					}
 
-					log.Printf( "Worker %d: failed to enqueue retry for job %s: %v",w.id,jobID,err,)
+					log.Printf("Worker %d: failed to enqueue retry for job %s: %v", w.id, jobID, err)
+					continue
 				}
+				log.Printf("Worker %d: job %s requeued successfully", w.id, jobID)
 				continue
 
 			}
 
-			
-			// Permanently Failed
-			log.Printf("Worker %d: job %s permanently failed",w.id,jobID,)
+			// Maximum attempts reached.
+			errMsg := "job processing failed"
 
-			// if err := w.repository.UpdateStatus(
-			// 	ctx,
-			// 	jobID,
-			// 	model.StatusFailed,
-			// ); err != nil {
-			// 	log.Printf("Worker %d: failed to mark job %s as failed: %v",w.id,jobID,err)
-			// }
+			// Permanently Failed
+			log.Printf("Worker %d: job %s permanently failed after %d attempts", w.id, jobID, attempt)
 
 			if err := w.repository.FailJob(
 				ctx,
 				jobID,
+				errMsg,
 			); err != nil {
-				log.Printf("Worker %d: failed to mark job %s as failed: %v",w.id,jobID,err)
+
+				if ctx.Err() != nil {
+					log.Printf("Worker %d context cancelled", w.id)
+					return
+				}
+
+				log.Printf("Worker %d: failed to mark job %s as failed: %v", w.id, jobID, err)
+				continue
 			}
 
+			log.Printf("Worker %d: job %s moved to DLQ after %d attempts", w.id, jobID, attempt)
 			continue
 		}
 
@@ -211,18 +226,17 @@ func (w *JobWorker) Start(ctx context.Context){
 		); err != nil {
 
 			if ctx.Err() != nil {
-				log.Printf("Worker %d context cancelled", w.id,)
+				log.Printf("Worker %d context cancelled", w.id)
 				return
 			}
 
-			log.Printf("Worker %d: failed to complete job %s: %v",w.id,jobID,err)
+			log.Printf("Worker %d: failed to complete job %s: %v", w.id, jobID, err)
 			continue
 		}
-		
-		log.Printf("Worker %d completed job %s",w.id,jobID)
+
+		log.Printf("Worker %d completed job %s", w.id, jobID)
 	}
 }
-
 
 func (w *JobWorker) processJob(
 	ctx context.Context,
@@ -248,10 +262,10 @@ func (w *JobWorker) processJob(
 				return err
 			}
 
-			log.Printf("Worker %d: renewed lease for job %s",w.id,jobID,)
+			log.Printf("Worker %d: renewed lease for job %s", w.id, jobID)
 
-			case <-ctx.Done():
-				return ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 
 	}
